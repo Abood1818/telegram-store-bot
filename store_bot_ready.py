@@ -1,164 +1,55 @@
-import json
-import os
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext, ConversationHandler
+import telebot
+from telebot import types
 
-# == إعدادات البوت ==
-TOKEN = "7390710856:AAGgxZKsyg6tL47IA-KwWVwe66dv85eSBdc"
-OWNER_ID = 671524794  # المعرف الخاص بك
+# بيانات البوت
+BOT_TOKEN = "7390710856:AAGgxZKsyg6tL47IA-KwWVwe66dv85eSBdc"
+ADMIN_ID = 671524794  # معرفك على تيليجرام
 
-# == مسارات الملفات ==
-DATA_FILE = "store_data.json"
+bot = telebot.TeleBot(BOT_TOKEN)
 
-# == حوار الحالات ==
-ADDING_CATEGORY, ADDING_PRODUCT_NAME, ADDING_PRODUCT_DESC, ADDING_PRODUCT_PRICE, SELECTING_CATEGORY = range(5)
+# قائمة السلع المؤقتة (في الذاكرة فقط)
+products = []
 
-# == تحميل أو إنشاء البيانات ==
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'w') as f:
-            json.dump({"categories": {}}, f)
-    with open(DATA_FILE, 'r') as f:
-        return json.load(f)
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("🛍️ عرض السلع", "💳 طرق الدفع")
+    if message.from_user.id == ADMIN_ID:
+        markup.add("➕ إضافة سلعة", "❌ حذف السلع")
+    bot.send_message(message.chat.id, "مرحبًا بك في متجرنا ✨\nاختر من القائمة:", reply_markup=markup)
 
-def save_data(data):
-    with open(DATA_FILE, 'w') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+@bot.message_handler(func=lambda m: m.text == "🛍️ عرض السلع")
+def show_products(message):
+    if not products:
+        bot.send_message(message.chat.id, "لا توجد سلع حالياً.")
+        return
+    for p in products:
+        bot.send_message(message.chat.id, f"📦 {p['name']}\n💰 السعر: {p['price']}")
 
-# == بدء البوت ==
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text("مرحباً بك في بوت المتجر! استخدم /add_category أو /add_product لإضافة منتجات.")
+@bot.message_handler(func=lambda m: m.text == "💳 طرق الدفع")
+def show_payment(message):
+    bot.send_message(message.chat.id, "💳 طرق الدفع:\n- STC Pay\n- Apple Pay\n- حوالة بنكية\n- PayPal")
 
-# == التحقق من المالك ==
-def is_owner(user_id):
-    return user_id == OWNER_ID
+@bot.message_handler(func=lambda m: m.text == "➕ إضافة سلعة" and m.from_user.id == ADMIN_ID)
+def ask_name(message):
+    msg = bot.send_message(message.chat.id, "📝 أرسل اسم السلعة:")
+    bot.register_next_step_handler(msg, ask_price)
 
-# == إضافة تصنيف ==
-def add_category(update: Update, context: CallbackContext):
-    if not is_owner(update.effective_user.id):
-        return update.message.reply_text("ليس لديك صلاحية.")
-    update.message.reply_text("أدخل اسم التصنيف الجديد:")
-    return ADDING_CATEGORY
+def ask_price(message):
+    name = message.text
+    msg = bot.send_message(message.chat.id, "💰 أرسل سعر السلعة:")
+    bot.register_next_step_handler(msg, lambda m: save_product(m, name))
 
-def save_category(update: Update, context: CallbackContext):
-    category = update.message.text.strip()
-    data = load_data()
-    if category in data["categories"]:
-        update.message.reply_text("هذا التصنيف موجود مسبقًا.")
-    else:
-        data["categories"][category] = []
-        save_data(data)
-        update.message.reply_text(f"تمت إضافة التصنيف: {category}")
-    return ConversationHandler.END
+def save_product(message, name):
+    price = message.text
+    products.append({'name': name, 'price': price})
+    bot.send_message(message.chat.id, f"✅ تم إضافة السلعة: {name} بسعر {price}")
 
-# == عرض التصنيفات ==
-def list_categories(update: Update, context: CallbackContext):
-    data = load_data()
-    keyboard = [[InlineKeyboardButton(cat, callback_data=f"cat:{cat}")] for cat in data["categories"]]
-    if keyboard:
-        update.message.reply_text("اختر تصنيف:", reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        update.message.reply_text("لا توجد تصنيفات حتى الآن.")
+@bot.message_handler(func=lambda m: m.text == "❌ حذف السلع" and m.from_user.id == ADMIN_ID)
+def delete_products(message):
+    products.clear()
+    bot.send_message(message.chat.id, "🗑️ تم حذف جميع السلع.")
 
-# == عرض منتجات التصنيف ==
-def category_selected(update: Update, context: CallbackContext):
-    query = update.callback_query
-    query.answer()
-    category = query.data.split(":")[1]
-    data = load_data()
-    products = data["categories"].get(category, [])
-    if products:
-        msg = f"📦 المنتجات في {category}:
-
-"
-        for p in products:
-            msg += f"🔸 {p['name']} - {p['price']} ريال
-{p['desc']}
-
-"
-    else:
-        msg = "لا توجد منتجات بعد في هذا التصنيف."
-    query.edit_message_text(msg)
-
-# == إضافة منتج ==
-def add_product(update: Update, context: CallbackContext):
-    if not is_owner(update.effective_user.id):
-        return update.message.reply_text("ليس لديك صلاحية.")
-    data = load_data()
-    if not data["categories"]:
-        return update.message.reply_text("أضف تصنيفًا أولًا باستخدام /add_category")
-    update.message.reply_text("أدخل اسم المنتج:")
-    return ADDING_PRODUCT_NAME
-
-def get_product_name(update: Update, context: CallbackContext):
-    context.user_data["new_product"] = {"name": update.message.text.strip()}
-    update.message.reply_text("أدخل وصف المنتج:")
-    return ADDING_PRODUCT_DESC
-
-def get_product_desc(update: Update, context: CallbackContext):
-    context.user_data["new_product"]["desc"] = update.message.text.strip()
-    update.message.reply_text("أدخل سعر المنتج (رقم فقط):")
-    return ADDING_PRODUCT_PRICE
-
-def get_product_price(update: Update, context: CallbackContext):
-    try:
-        price = float(update.message.text.strip())
-        context.user_data["new_product"]["price"] = price
-    except ValueError:
-        return update.message.reply_text("يرجى إدخال رقم صحيح للسعر.")
-    data = load_data()
-    categories = list(data["categories"].keys())
-    keyboard = [[InlineKeyboardButton(cat, callback_data=f"add_to_cat:{cat}")] for cat in categories]
-    update.message.reply_text("اختر التصنيف لإضافة المنتج إليه:", reply_markup=InlineKeyboardMarkup(keyboard))
-    return SELECTING_CATEGORY
-
-def assign_product_to_category(update: Update, context: CallbackContext):
-    query = update.callback_query
-    query.answer()
-    category = query.data.split(":")[1]
-    data = load_data()
-    data["categories"][category].append(context.user_data["new_product"])
-    save_data(data)
-    query.edit_message_text("✅ تمت إضافة المنتج بنجاح.")
-    return ConversationHandler.END
-
-# == إلغاء ==
-def cancel(update: Update, context: CallbackContext):
-    update.message.reply_text("تم إلغاء العملية.")
-    return ConversationHandler.END
-
-# == تشغيل البوت ==
-def main():
-    updater = Updater(TOKEN)
-    dp = updater.dispatcher
-
-    # المحادثات
-    conv_add_cat = ConversationHandler(
-        entry_points=[CommandHandler("add_category", add_category)],
-        states={ADDING_CATEGORY: [MessageHandler(Filters.text & ~Filters.command, save_category)]},
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-
-    conv_add_product = ConversationHandler(
-        entry_points=[CommandHandler("add_product", add_product)],
-        states={
-            ADDING_PRODUCT_NAME: [MessageHandler(Filters.text & ~Filters.command, get_product_name)],
-            ADDING_PRODUCT_DESC: [MessageHandler(Filters.text & ~Filters.command, get_product_desc)],
-            ADDING_PRODUCT_PRICE: [MessageHandler(Filters.text & ~Filters.command, get_product_price)],
-            SELECTING_CATEGORY: [CallbackQueryHandler(assign_product_to_category, pattern="^add_to_cat:")],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-
-    # أوامر
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("list_categories", list_categories))
-    dp.add_handler(CallbackQueryHandler(category_selected, pattern="^cat:"))
-    dp.add_handler(conv_add_cat)
-    dp.add_handler(conv_add_product)
-
-    updater.start_polling()
-    updater.idle()
-
-if __name__ == '__main__':
-    main()
+# بدء التشغيل
+print("✅ البوت يعمل الآن ...")
+bot.infinity_polling()
